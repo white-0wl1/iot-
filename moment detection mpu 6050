@@ -1,0 +1,67 @@
+#include <Wire.h>
+#include <MPU6050.h>
+
+MPU6050 mpu;
+
+// Gyro baseline (calibration)
+int16_t base_gx, base_gy, base_gz;
+
+// Ignore small vibration
+const int GYRO_THRESHOLD = 300;
+
+// Time condition
+unsigned long gyroMoveStart = 0;
+const unsigned long MOVE_TIME = 5000; // 5 seconds
+
+// Track previous state
+bool wasMotionDetected = false;
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(21, 22);
+
+  mpu.initialize();
+  Serial.println("MPU6050 connected");
+
+  // -------- CALIBRATION --------
+  Serial.println("Calibrating... Keep bike still");
+  delay(4000);
+
+  int16_t ax, ay, az;
+  mpu.getMotion6(&ax, &ay, &az,
+                 &base_gx, &base_gy, &base_gz);
+
+  Serial.println("Calibration done");
+}
+
+void loop() {
+  int16_t ax, ay, az, gx, gy, gz;
+  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+
+  bool gyroMoving =
+    abs(gx - base_gx) > GYRO_THRESHOLD ||
+    abs(gy - base_gy) > GYRO_THRESHOLD ||
+    abs(gz - base_gz) > GYRO_THRESHOLD;
+
+  if (gyroMoving) {
+    if (gyroMoveStart == 0) {
+      gyroMoveStart = millis(); // start timing
+    }
+
+    if (millis() - gyroMoveStart >= MOVE_TIME) {
+      Serial.println("MOTION DETECTED");
+      wasMotionDetected = true; // motion is now detected
+    }
+
+  } else {
+    gyroMoveStart = 0;
+
+    // Print "Not Detected" only once when state changes
+    if (wasMotionDetected) {
+      Serial.println("Not Detected");
+      wasMotionDetected = false;
+    }
+  }
+
+  delay(200);
+}
