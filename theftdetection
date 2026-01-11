@@ -1,0 +1,113 @@
+#include <Wire.h>
+#include <MPU6050.h>
+#include <TinyGPS++.h>
+
+MPU6050 mpu;
+TinyGPSPlus gps;
+
+/* ---------- MPU6050 SETTINGS ---------- */
+int16_t base_gx, base_gy, base_gz;
+const int GYRO_THRESHOLD = 300;
+const unsigned long MOVE_TIME = 4000; // 4 seconds
+unsigned long gyroMoveStart = 0;
+bool motionDetected = false;
+
+/* ---------- GPS SETTINGS ---------- */
+double parkedLat = 0.0, parkedLng = 0.0;
+bool parkedLocationSaved = false;
+
+/* ---------- SETUP ---------- */
+void setup() {
+  Serial.begin(115200);
+  Serial2.begin(9600, SERIAL_8N1, 16, 17);
+
+  Wire.begin(21, 22);
+  mpu.initialize();
+
+  Serial.println("System Starting...");
+  Serial.println("Calibrating MPU6050, keep vehicle still...");
+  delay(4000);
+
+  int16_t ax, ay, az;
+  mpu.getMotion6(&ax, &ay, &az, &base_gx, &base_gy, &base_gz);
+  Serial.println("MPU6050 Calibration Done");
+
+  Serial.println("Waiting for GPS fix to save parked location...");
+  while (!parkedLocationSaved) {
+    while (Serial2.available()) {
+      gps.encode(Serial2.read());
+      if (gps.location.isValid()) {
+        parkedLat = gps.location.lat();
+        parkedLng = gps.location.lng();
+        parkedLocationSaved = true;
+
+        Serial.print("Parked Location Saved: ");
+        Serial.print(parkedLat, 6);
+        Serial.print(", ");
+        Serial.println(parkedLng, 6);
+      }
+    }
+  }
+}
+
+/* ---------- LOOP ---------- */
+void loop() {
+
+  /* Read GPS continuously */
+  while (Serial2.available()) {
+    gps.encode(Serial2.read());
+  }
+
+  /* Read MPU6050 */
+  int16_t ax, ay, az, gx, gy, gz;
+  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+
+  bool gyroMoving =
+    abs(gx - base_gx) > GYRO_THRESHOLD ||
+    abs(gy - base_gy) > GYRO_THRESHOLD ||
+    abs(gz - base_gz) > GYRO_THRESHOLD;
+
+  /* Motion timing logic */
+  if (gyroMoving) {
+    if (gyroMoveStart == 0) gyroMoveStart = millis();
+    if (millis() - gyroMoveStart >= MOVE_TIME) {
+      motionDetected = true;
+    }
+  } else {
+    gyroMoveStart = 0;
+    motionDetected = false;
+  }
+
+  /* GPS OUTPUT LOGIC */
+  if (gps.location.isValid()) {
+    double currLat = gps.location.lat();
+    double currLng = gps.location.lng();
+    double distance =
+      TinyGPSPlus::distanceBetween(
+        parkedLat, parkedLng,
+        currLat, currLng
+      );
+
+    Serial.println("-----------------------");
+    Serial.print("Latitude: ");
+    Serial.println(currLat, 6);
+    Serial.print("Longitude: ");
+    Serial.println(currLng, 6);
+    Serial.print("Distance (m): ");
+    Serial.println(distance);
+
+    /* DECISION */
+    if (!motionDetected) {
+      Serial.println("STATUS: NOT MOVING");
+    }
+    else {
+      if (distance > 100.0) {
+        Serial.println("ALERT: VEHICLE MOVED OUTSIDE RADIUS");
+      } else {
+        Serial.println("STATUS: VEHICLE MOVING (INSIDE RADIUS)");
+      }
+    }
+  }
+
+  delay(1000);
+}
