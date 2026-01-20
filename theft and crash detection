@@ -1,0 +1,227 @@
+#include <Wire.h>
+#include <MPU6050.h>
+#include <TinyGPS++.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+
+/* ----------------- WIFI SETTINGS ----------------- */
+const char* WIFI_SSID = "SAGAR-ZENBOOK14 6475";
+const char* WIFI_PASS = "12345678";
+
+/* Server IP (same WiFi) - MUST BE HTTP NOT HTTPS */
+const char* SERVER_URL = "http://192.168.8.10:8000/api/navigate/telemetry/";
+
+/* ----------------- DEVICE INFO ----------------- */
+const char* DEVICE_ID = "Dev_101";
+
+/* Dummy engine status */
+bool engineOn = true;   // 🔴 DUMMY (replace later with button)
+
+/* ----------------- GPS & MPU ----------------- */
+MPU6050 mpu;
+TinyGPSPlus gps;
+
+int16_t base_gx, base_gy, base_gz;
+const int GYRO_THRESHOLD = 300;
+const unsigned long MOVE_TIME = 4000;
+unsigned long gyroMoveStart = 0;
+
+/* ----------------- PARKED LOCATION ----------------- */
+double parkedLat = 0.0, parkedLng = 0.0;
+bool parkedSaved = false;
+const double PARKED_RADIUS = 10.0; // meters
+
+/* ----------------- STATE ----------------- */
+enum VehicleState {
+  PARKED,
+  MOVING_INSIDE,
+  MOVING_OUTSIDE
+};
+
+VehicleState currentState = PARKED;
+VehicleState previousState = PARKED;
+
+/* ----------------- TIMING ----------------- */
+unsigned long lastSendTime = 0;
+const unsigned long LIVE_SEND_INTERVAL = 5000; // 5 sec
+
+/* ----------------- FUNCTIONS ----------------- */
+bool isMoving() {
+  int16_t ax, ay, az, gx, gy, gz;
+  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+
+  bool moving =
+    abs(gx - base_gx) > GYRO_THRESHOLD ||
+    abs(gy - base_gy) > GYRO_THRESHOLD ||
+    abs(gz - base_gz) > GYRO_THRESHOLD;
+
+  if (moving) {
+    if (gyroMoveStart == 0) gyroMoveStart = millis();
+    if (millis() - gyroMoveStart >= MOVE_TIME) return true;
+  } else {
+    gyroMoveStart = 0;
+  }
+  return false;
+}
+
+// Get current timestamp in ISO format
+String getTimestamp() {
+  // Simple timestamp - you can improve this with RTC
+  unsigned long seconds = millis() / 1000;
+  char timestamp[30];
+  sprintf(timestamp, "2026-01-20T%02d:%02d:%02dZ", 
+          (int)((seconds / 3600) % 24), 
+          (int)((seconds / 60) % 60), 
+          (int)(seconds % 60));
+  return String(timestamp);
+}
+
+void sendData(bool isParked, double lat, double lng) {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  HTTPClient http;
+  http.begin(SERVER_URL);
+  http.addHeader("Content-Type", "application/json");
+
+  // Read accelerometer for crash detection
+  int16_t ax, ay, az, gx, gy, gz;
+  mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+  
+  // Convert raw values to m/s² (MPU6050 sensitivity: 16384 LSB/g)
+  float accel_x = (ax / 16384.0) * 9.8;
+  float accel_y = (ay / 16384.0) * 9.8;
+  float accel_z = (az / 16384.0) * 9.8;
+
+  // Get GPS speed (convert knots to m/s if needed)
+  float speed = gps.speed.isValid() ? gps.speed.mps() : 0.0;
+  
+  // Get heading
+  float heading = gps.course.isValid() ? gps.course.deg() : 0.0;
+
+  // Construct JSON payload matching Django API
+  String json = "{";
+  json += "\"device_id\":\"" + String(DEVICE_ID) + "\",";
+  json += "\"timestamp\":\"" + getTimestamp() + "\",";
+  json += "\"latitude\":" + String(lat, 6) + ",";
+  json += "\"longitude\":" + String(lng, 6) + ",";
+  json += "\"speed\":" + String(speed, 2) + ",";
+  json += "\"heading\":" + String(heading, 2) + ",";
+  json += "\"accel_x\":" + String(accel_x, 3) + ",";
+  json += "\"accel_y\":" + String(accel_y, 3) + ",";
+  json += "\"accel_z\":" + String(accel_z, 3) + ",";
+  json += "\"engine_status\":" + String(engineOn ? "true" : "false") + ",";
+  json += "\"parking_status\":" + String(isParked ? "true" : "false") + ",";
+  json += "\"ble_proximity\":true";  // Assume owner nearby for now
+  json += "}";
+
+  // Send POST request
+  int httpCode = http.POST(json);
+
+  // Print HTTP status code
+  Serial.print("HTTP Response Code: ");
+  Serial.println(httpCode);
+
+  // Read and print the server response
+  if (httpCode > 0) {
+    String response = http.getString();
+    Serial.println("📡 Server Response:");
+    Serial.println(response);
+  } else {
+    Serial.print("POST failed, error: ");
+    Serial.println(httpCode);
+  }
+
+  Serial.println("📡 Data Sent:");
+  Serial.println(json);
+
+  http.end();
+}
+
+/* ----------------- SETUP ----------------- */
+void setup() {
+  Serial.begin(115200);
+  Serial2.begin(9600, SERIAL_8N1, 16, 17); // GPS
+
+  Wire.begin(22, 23);  // MPU
+  mpu.initialize();
+
+  Serial.println("Calibrating MPU...");
+  delay(4000);
+
+  int16_t ax, ay, az;
+  mpu.getMotion6(&ax, &ay, &az, &base_gx, &base_gy, &base_gz);
+
+  /* WiFi */
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(true);
+  delay(1000);
+
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  Serial.print("Connecting WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nWiFi Connected");
+  Serial.println(WiFi.localIP());
+
+  Serial.println("Waiting for GPS fix to save parked location...");
+}
+
+/* ----------------- LOOP ----------------- */
+void loop() {
+  // Always read GPS
+  while (Serial2.available()) {
+    gps.encode(Serial2.read());
+  }
+
+  // Wait for parked location
+  if (!parkedSaved && gps.location.isValid()) {
+    parkedLat = gps.location.lat();
+    parkedLng = gps.location.lng();
+    parkedSaved = true;
+    Serial.println("📍 Parked location saved");
+
+    // Send initial PARKED status immediately
+    sendData(true, parkedLat, parkedLng);
+  }
+
+  // Do nothing until GPS fix and parked location saved
+  if (!gps.location.isValid() || !parkedSaved) return;
+
+  double lat = gps.location.lat();
+  double lng = gps.location.lng();
+
+  double distance = TinyGPSPlus::distanceBetween(
+    parkedLat, parkedLng, lat, lng
+  );
+
+  bool moving = isMoving();
+
+  if (!moving) {
+    currentState = PARKED;
+  } else {
+    if (distance > PARKED_RADIUS) currentState = MOVING_OUTSIDE;
+    else currentState = MOVING_INSIDE;
+  }
+
+  /* ---------- SEND STATE CHANGE ---------- */
+  if (currentState != previousState) {
+    if (currentState == PARKED)
+      sendData(true, parkedLat, parkedLng);
+    else
+      sendData(false, lat, lng);
+
+    previousState = currentState;
+  }
+
+  /* Continuous live tracking if outside */
+  if (currentState == MOVING_OUTSIDE &&
+      millis() - lastSendTime > LIVE_SEND_INTERVAL) {
+
+    sendData(false, lat, lng);
+    lastSendTime = millis();
+  }
+
+  delay(200);
+}
