@@ -1,0 +1,135 @@
+#include <Wire.h>
+#include <TinyGPSPlus.h>
+#include <HardwareSerial.h>
+#include <math.h>
+
+/* ---------------- PINS ---------------- */
+#define RX_PIN 16
+#define TX_PIN 17
+#define MPU_ADDR 0x68
+
+/* ---------------- OBJECTS ---------------- */
+TinyGPSPlus gps;
+HardwareSerial GPSSerial(2);
+
+/* ---------------- MPU DATA ---------------- */
+int16_t AcX, AcY, AcZ;
+int16_t GyX, GyY, GyZ;
+int16_t TempRaw;
+
+/* ---------------- SETUP ---------------- */
+void setup() {
+  Serial.begin(115200);
+
+  // I2C (SDA=21, SCL=22)
+  Wire.begin(22, 23);
+
+  // Wake MPU6050
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x6B);
+  Wire.write(0x00);
+  Wire.endTransmission(true);
+
+  // GPS UART2
+  GPSSerial.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
+
+  Serial.println("System Started - Printing Only Data");
+}
+
+/* ---------------- LOOP ---------------- */
+void loop() {
+  readGPS();
+  readMPU();
+  printData();
+  delay(500);
+}
+
+/* ---------------- GPS READ ---------------- */
+void readGPS() {
+  while (GPSSerial.available()) {
+    gps.encode(GPSSerial.read());
+  }
+}
+
+/* ---------------- MPU READ ---------------- */
+void readMPU() {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x3B);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 14, true);
+
+  AcX = Wire.read() << 8 | Wire.read();
+  AcY = Wire.read() << 8 | Wire.read();
+  AcZ = Wire.read() << 8 | Wire.read();
+
+  TempRaw = Wire.read() << 8 | Wire.read();
+
+  GyX = Wire.read() << 8 | Wire.read();
+  GyY = Wire.read() << 8 | Wire.read();
+  GyZ = Wire.read() << 8 | Wire.read();
+}
+
+/* ---------------- PRINT ALL DATA ---------------- */
+void printData() {
+
+  Serial.println("------ SENSOR DATA ------");
+
+  // -------- MPU6050 --------
+  Serial.println("MPU6050:");
+
+  Serial.print("Accel X: "); Serial.print(AcX);
+  Serial.print("  Y: "); Serial.print(AcY);
+  Serial.print("  Z: "); Serial.println(AcZ);
+
+  Serial.print("Gyro  X: "); Serial.print(GyX);
+  Serial.print("  Y: "); Serial.print(GyY);
+  Serial.print("  Z: "); Serial.println(GyZ);
+
+  float tempC = (TempRaw / 340.0) + 36.53;
+  Serial.print("Temperature (C): ");
+  Serial.println(tempC);
+
+  // -------- GPS --------
+  Serial.println("GPS:");
+
+  if (gps.location.isValid()) {
+    Serial.print("Latitude: ");
+    Serial.println(gps.location.lat(), 6);
+
+    Serial.print("Longitude: ");
+    Serial.println(gps.location.lng(), 6);
+  }
+
+  if (gps.speed.isValid()) {
+    Serial.print("Speed (km/h): ");
+    Serial.println(gps.speed.kmph());
+  }
+
+  if (gps.altitude.isValid()) {
+    Serial.print("Altitude (m): ");
+    Serial.println(gps.altitude.meters());
+  }
+
+  if (gps.satellites.isValid()) {
+    Serial.print("Satellites: ");
+    Serial.println(gps.satellites.value());
+  }
+
+  if (gps.date.isValid() && gps.time.isValid()) {
+    Serial.print("Date: ");
+    Serial.print(gps.date.day());
+    Serial.print("/");
+    Serial.print(gps.date.month());
+    Serial.print("/");
+    Serial.println(gps.date.year());
+
+    Serial.print("Time: ");
+    Serial.print(gps.time.hour());
+    Serial.print(":");
+    Serial.print(gps.time.minute());
+    Serial.print(":");
+    Serial.println(gps.time.second());
+  }
+
+  Serial.println("--------------------------");
+}
