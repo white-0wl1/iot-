@@ -1,0 +1,311 @@
+#include <Wire.h>
+#include <MPU6050.h>
+#include <TinyGPS++.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+
+/* ------------ BUILD TAG ------------ */
+#define BUILD_TAG "CRASH_TEST_V1"
+
+/* ------------ WIFI ------------ */
+
+const char* WIFI_SSID = "rashmishrestha";
+const char* WIFI_PASS = "CLB2822B26";
+
+const char* SERVER_URL =
+"http://192.168.1.116:8000/api/navigate/telemetry/";
+
+const char* DEVICE_ID="Dev_101";
+
+/* ------------ PINS ------------ */
+
+#define SDA_PIN 22
+#define SCL_PIN 23
+
+#define GPS_RX 16
+#define GPS_TX 17
+
+/* ------------ MODULES ------------ */
+
+MPU6050 mpu;
+TinyGPSPlus gps;
+
+/* ------------ TEST FLAGS ------------ */
+
+bool engineOn=false;
+bool bleProximity=false;
+
+/* ------------ THRESHOLDS (TEST MODE) ------------ */
+
+#define CRASH_DELTA_THRESHOLD 0.15
+
+#define TELEMETRY_INTERVAL 2000
+
+/* ------------ TIMERS ------------ */
+
+unsigned long lastSend=0;
+
+/* ------------ GPS STATE ------------ */
+
+bool gpsFix=false;
+
+double lastLat=0;
+double lastLng=0;
+
+/* ------------ WIFI ------------ */
+
+void checkWiFi(){
+
+if(WiFi.status()==WL_CONNECTED)return;
+
+Serial.println("Reconnecting WiFi");
+
+WiFi.begin(WIFI_SSID,WIFI_PASS);
+
+while(WiFi.status()!=WL_CONNECTED){
+
+delay(500);
+Serial.print(".");
+
+}
+
+Serial.println("Connected");
+
+}
+
+/* ------------ TIMESTAMP ------------ */
+
+String getTimestamp(){
+
+unsigned long s=millis()/1000;
+
+char t[30];
+
+sprintf(t,"2026-01-01T%02lu:%02lu:%02luZ",
+
+(s/3600)%24,
+(s/60)%60,
+s%60);
+
+return String(t);
+
+}
+
+/* ------------ SEND ------------ */
+
+void sendData(double lat,double lng,String alert){
+
+checkWiFi();
+
+/* Read MPU */
+
+int16_t ax,ay,az,gx,gy,gz;
+
+mpu.getMotion6(&ax,&ay,&az,&gx,&gy,&gz);
+
+/* Convert */
+
+float axg=ax/16384.0;
+float ayg=ay/16384.0;
+float azg=az/16384.0;
+
+/* gforce */
+
+float gForce=sqrt(axg*axg+ayg*ayg+azg*azg);
+
+float deltaG=fabs(gForce-1.0);
+
+/* ---------- SERIAL PRINT ---------- */
+
+Serial.println();
+Serial.println("========= TELEMETRY =========");
+
+Serial.println(BUILD_TAG);
+
+Serial.print("RAW ax=");
+Serial.print(ax);
+
+Serial.print(" ay=");
+Serial.print(ay);
+
+Serial.print(" az=");
+Serial.println(az);
+
+Serial.print("gForce=");
+Serial.print(gForce,3);
+
+Serial.print(" deltaG=");
+Serial.println(deltaG,3);
+
+Serial.print("GPS Valid=");
+Serial.println(gpsFix);
+
+Serial.print("Lat=");
+Serial.println(lat,6);
+
+Serial.print("Lng=");
+Serial.println(lng,6);
+
+Serial.print("Alert=");
+Serial.println(alert);
+
+Serial.println("=============================");
+
+/* ---------- JSON ---------- */
+
+String json="{";
+
+json+="\"device_id\":\""+String(DEVICE_ID)+"\",";
+
+json+="\"timestamp\":\""+getTimestamp()+"\",";
+
+json+="\"gps_valid\":"+String(gpsFix?"true":"false")+",";
+
+json+="\"latitude\":"+String(lat,6)+",";
+
+json+="\"longitude\":"+String(lng,6)+",";
+
+json+="\"accel_x\":"+String(axg*9.8,3)+",";
+
+json+="\"accel_y\":"+String(ayg*9.8,3)+",";
+
+json+="\"accel_z\":"+String(azg*9.8,3)+",";
+
+json+="\"alert\":\""+alert+"\"";
+
+json+="}";
+
+Serial.println("JSON:");
+Serial.println(json);
+
+/* ---------- SEND ---------- */
+
+if(WiFi.status()==WL_CONNECTED){
+
+HTTPClient http;
+
+http.begin(SERVER_URL);
+
+http.addHeader("Content-Type","application/json");
+
+int code=http.POST(json);
+
+Serial.print("HTTP=");
+Serial.println(code);
+
+http.end();
+
+}
+
+}
+
+/* ------------ SETUP ------------ */
+
+void setup(){
+
+Serial.begin(115200);
+
+Serial.println();
+Serial.println(BUILD_TAG);
+
+Serial2.begin(9600,SERIAL_8N1,GPS_RX,GPS_TX);
+
+Wire.begin(SDA_PIN,SCL_PIN);
+
+mpu.initialize();
+
+/* Force correct MPU scale */
+
+mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_2);
+mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_250);
+
+Serial.println("MPU Ready");
+
+/* WIFI */
+
+WiFi.begin(WIFI_SSID,WIFI_PASS);
+
+Serial.print("Connecting WiFi");
+
+while(WiFi.status()!=WL_CONNECTED){
+
+delay(500);
+Serial.print(".");
+
+}
+
+Serial.println();
+Serial.println("WiFi OK");
+
+Serial.println(WiFi.localIP());
+
+Serial.println("GPS running in background");
+
+}
+
+/* ------------ LOOP ------------ */
+
+void loop(){
+
+/* GPS background */
+
+while(Serial2.available())
+gps.encode(Serial2.read());
+
+if(gps.location.isValid()){
+
+gpsFix=true;
+
+lastLat=gps.location.lat();
+lastLng=gps.location.lng();
+
+}
+else{
+
+gpsFix=false;
+
+}
+
+/* Safe coordinates */
+
+double lat=gpsFix?lastLat:0;
+double lng=gpsFix?lastLng:0;
+
+
+/* ---------- CRASH TEST ---------- */
+
+int16_t ax,ay,az,gx,gy,gz;
+
+mpu.getMotion6(&ax,&ay,&az,&gx,&gy,&gz);
+
+float axg=ax/16384.0;
+float ayg=ay/16384.0;
+float azg=az/16384.0;
+
+float gForce=sqrt(axg*axg+ayg*ayg+azg*azg);
+
+float deltaG=fabs(gForce-1.0);
+
+bool crash=(deltaG>CRASH_DELTA_THRESHOLD);
+
+/* Alert */
+
+String alert="";
+
+if(crash)
+alert="CRASH";
+
+
+/* ---------- SEND ---------- */
+
+if(millis()-lastSend>TELEMETRY_INTERVAL){
+
+sendData(lat,lng,alert);
+
+lastSend=millis();
+
+}
+
+delay(100);
+
+}
