@@ -1,0 +1,138 @@
+/*
+  ESP32 Dummy Location Sender
+  Sends location every 1 minute
+*/
+
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+
+/* WIFI */
+const char* WIFI_SSID = "rashmishrestha";
+const char* WIFI_PASS = "CLB2822B26";
+
+/* SERVER */
+const char* SERVER_URL = "https://api.blackbucktechnology.com/api/location";
+const char* DEVICE_ID = "DEVICE_001";
+
+/* TIMER */
+
+unsigned long lastSend = 0;
+const unsigned long SEND_INTERVAL = 60000; // 1 minute
+
+WiFiClientSecure client;
+
+/* ---------------- WIFI ---------------- */
+
+void connectWiFi() {
+
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  Serial.print("Connecting WiFi");
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+  Serial.println("WiFi Connected");
+
+  Serial.print("IP: ");
+  Serial.println(WiFi.localIP());
+}
+
+/* ---------------- TIMESTAMP ---------------- */
+
+String getTimestamp() {
+
+  unsigned long s = millis() / 1000;
+
+  char buf[30];
+
+  sprintf(buf,"2026-01-01T%02lu:%02lu:%02luZ",
+          (s/3600)%24,
+          (s/60)%60,
+          s%60);
+
+  return String(buf);
+}
+
+/* ---------------- JSON ---------------- */
+
+String buildJSON() {
+
+  double latitude = 27.7172;   // Dummy Kathmandu
+  double longitude = 85.3240;
+
+  double altitude = 1300;
+  double speed = 30;
+
+  String timestamp = getTimestamp();
+
+  String json = "{";
+
+  json += "\"deviceId\":\"" + String(DEVICE_ID) + "\",";
+  json += "\"latitude\":" + String(latitude,6) + ",";
+  json += "\"longitude\":" + String(longitude,6) + ",";
+  json += "\"altitude\":" + String(altitude,2) + ",";
+  json += "\"speed\":" + String(speed,2) + ",";
+  json += "\"timestamp\":\"" + timestamp + "\"";
+
+  json += "}";
+
+  return json;
+}
+
+/* ---------------- SEND DATA ---------------- */
+
+void sendLocation() {
+
+  client.setInsecure();
+
+  HTTPClient http;
+
+  http.begin(client, SERVER_URL);
+
+  http.addHeader("Content-Type","application/json");
+
+  String json = buildJSON();
+
+  Serial.println("Sending JSON:");
+  Serial.println(json);
+
+  int httpCode = http.POST(json);
+
+  Serial.print("HTTP Response: ");
+  Serial.println(httpCode);
+
+  String response = http.getString();
+
+  Serial.println("Server Response:");
+  Serial.println(response);
+
+  http.end();
+}
+
+/* ---------------- SETUP ---------------- */
+
+void setup() {
+
+  Serial.begin(115200);
+
+  Serial.println("ESP32 Dummy Location Sender");
+
+  connectWiFi();
+}
+
+/* ---------------- LOOP ---------------- */
+
+void loop() {
+
+  if (millis() - lastSend > SEND_INTERVAL) {
+
+    lastSend = millis();
+
+    sendLocation();
+  }
+}
